@@ -23,7 +23,7 @@ from prodigyopt import Prodigy
 warnings.filterwarnings("ignore")
 
 IMG_H, IMG_W = 128, 256
-PATCH_H, PATCH_W = 16, 16
+PATCH_H, PATCH_W = 32, 32
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 CKPT_DIR = 'ckpts_predictive_action'
 SAVE_INTERVAL = 900
@@ -34,8 +34,9 @@ pyautogui.PAUSE = 0.0
 
 INPUT_DURATION = 0.3
 MOUSE_DURATION = 0.04
+DREAM_HORIZON = 16
 
-KEY_LIST = ['w', 'a', 's', 'd', 'space', 'shift', 'ctrl', 'e', 'q']
+KEY_LIST = ['w', 'a', 's', 'd', 'space', 'shift', 'ctrl', 'q']
 
 CONTROLS_MAP = []
 for k in KEY_LIST:
@@ -146,7 +147,7 @@ class CheckpointManager:
         return ckpt.get('step', 0)
 
 class Transformer(nn.Module):
-    def __init__(self, image_dim, audio_dim=2, embed_dim=256, heads=8, depth=4, num_actions=NUM_CONTROLS):
+    def __init__(self, image_dim, audio_dim=2, embed_dim=256, heads=4, depth=4, num_actions=NUM_CONTROLS):
         super().__init__()
         self.embed = nn.Linear(image_dim + audio_dim, embed_dim)
 
@@ -167,6 +168,21 @@ class Transformer(nn.Module):
         next_pred = self.next_frame_head(last)
         action_logits = self.action_head(last)
         return next_pred, action_logits
+
+    def dream(self, x, steps=5):
+        predictions = []
+        current_seq = x.clone()
+
+        for _ in range(steps):
+            emb = self.embed(current_seq)
+            out = self.decoder(emb)
+            last = out[:, -1, :]
+            next_step_pred = self.next_frame_head(last)
+            next_step_token = next_step_pred.unsqueeze(1)
+            current_seq = torch.cat((current_seq, next_step_token), dim=1)
+            predictions.append(next_step_pred)
+
+        return predictions
 
 def grab_frame(sct, rect):
     mon = {"left": rect[0], "top": rect[1], "width": rect[2]-rect[0], "height": rect[3]-rect[1]}
@@ -236,6 +252,10 @@ def main():
             inp = valid_window[:-1].unsqueeze(0)
 
             model.train()
+            
+            with torch.no_grad():
+                imagined_trajectory = model.dream(inp, steps=DREAM_HORIZON)
+
             pred_next, action_logits = model(inp)
 
             action_probs = torch.sigmoid(action_logits)
