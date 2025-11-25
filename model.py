@@ -36,7 +36,7 @@ INPUT_DURATION = 0.3
 MOUSE_DURATION = 0.04
 DREAM_HORIZON = 16
 
-KEY_LIST = ['w', 'a', 's', 'd', 'space', 'shift', 'ctrl', 'q']
+KEY_LIST = ['w', 'a', 's', 'd', 'space', 'shift', 'ctrl', 'q', 'e']
 
 CONTROLS_MAP = []
 for k in KEY_LIST:
@@ -69,7 +69,6 @@ class WindowMgr:
         rect = wintypes.RECT()
         ctypes.windll.user32.GetWindowRect(self._hwnd, ctypes.byref(rect))
         self._rect = (rect.left, rect.top, rect.right, rect.bottom)
-
         length = ctypes.windll.user32.GetWindowTextLengthW(self._hwnd)
         buff = ctypes.create_unicode_buffer(length + 1)
         ctypes.windll.user32.GetWindowTextW(self._hwnd, buff, length + 1)
@@ -124,6 +123,48 @@ class AudioEar:
         self.running = False
         if self.thread.is_alive():
             self.thread.join(timeout=0.5)
+
+class HumanListener:
+    def __init__(self):
+        self.last_mouse_pos = pyautogui.position()
+        
+    def get_active_vector(self):
+        active_vec = torch.zeros(NUM_CONTROLS).to(DEVICE)
+        
+        curr_mouse_x, curr_mouse_y = pyautogui.position()
+        delta_x = curr_mouse_x - self.last_mouse_pos[0]
+        delta_y = curr_mouse_y - self.last_mouse_pos[1]
+        self.last_mouse_pos = (curr_mouse_x, curr_mouse_y)
+        
+        vk_lbutton = 0x01
+        vk_rbutton = 0x02
+        left_clicked = (ctypes.windll.user32.GetAsyncKeyState(vk_lbutton) & 0x8000) != 0
+        right_clicked = (ctypes.windll.user32.GetAsyncKeyState(vk_rbutton) & 0x8000) != 0
+
+        for i, ctrl in enumerate(CONTROLS_MAP):
+            is_active = False
+            
+            if ctrl['type'] == 'key':
+                if keyboard.is_pressed(ctrl['val']):
+                    is_active = True
+            
+            elif ctrl['type'] == 'click':
+                if ctrl['btn'] == 'left' and left_clicked:
+                    is_active = True
+                elif ctrl['btn'] == 'right' and right_clicked:
+                    is_active = True
+            
+            elif ctrl['type'] == 'move':
+                sensitivity_thresh = 5
+                if ctrl['y'] < 0 and delta_y < -sensitivity_thresh: is_active = True # Up
+                if ctrl['y'] > 0 and delta_y > sensitivity_thresh: is_active = True # Down
+                if ctrl['x'] < 0 and delta_x < -sensitivity_thresh: is_active = True # Left
+                if ctrl['x'] > 0 and delta_x > sensitivity_thresh: is_active = True # Right
+            
+            if is_active:
+                active_vec[i] = 1.0
+                
+        return active_vec
 
 class CheckpointManager:
     @staticmethod
@@ -196,26 +237,40 @@ def image_to_flat(img):
 
 def main():
     wm = WindowMgr()
+    
+    print("\n=== SYSTEM CONTROL ===")
+    print("[1] PLAY MODE (Autonomous Control)")
+    print("[2] WATCH MODE (Imitation Learning)")
+    mode_sel = input("Select mode (1/2): ").strip()
+    
+    is_watch_mode = (mode_sel == '2')
+    mode_str = "WATCH" if is_watch_mode else "PLAY"
+    print(f"initializing {mode_str} mode...")
+
     print("Open and focus your target window. Locking in 5s...")
     time.sleep(5)
     title = wm.capture_active()
     print(f"LOCKED TARGET: '{title}'")
-    wm.lock_cursor()
+    
+    if not is_watch_mode:
+        wm.lock_cursor()
+    
     wm.force_focus()
 
     sct = mss.mss()
     audio = AudioEar()
+    human = HumanListener()
 
     image_dim = IMG_H * IMG_W * 3
     audio_dim = 2
 
     model = Transformer(image_dim=image_dim, audio_dim=audio_dim).to(DEVICE)
     opt = Prodigy(model.parameters(), lr=0.04)
+    criterion_action = nn.BCEWithLogitsLoss()
 
     step = CheckpointManager.load(model, opt)
 
     SEQ_LEN = 4096
-    
     ctx_buffer = torch.zeros((SEQ_LEN + 1, image_dim + audio_dim), device=DEVICE)
     ctx_count = 0
 
@@ -235,6 +290,10 @@ def main():
 
             img = grab_frame(sct, rect)
             l, r = audio.get_levels() if audio.running else (0.0, 0.0)
+            
+            human_actions = None
+            if is_watch_mode:
+                human_actions = human.get_active_vector()
 
             flat_numpy = np.concatenate([image_to_flat(img), np.array([l, r], dtype=np.float32)])
             flat_tensor = torch.from_numpy(flat_numpy).to(DEVICE)
@@ -258,33 +317,36 @@ def main():
 
             pred_next, action_logits = model(inp)
 
-            action_probs = torch.sigmoid(action_logits)
-            dist = torch.distributions.Bernoulli(action_probs)
-            action_sample = dist.sample()
-            active_indices = (action_sample[0] == 1).nonzero(as_tuple=True)[0]
+            if not is_watch_mode:
+                action_probs = torch.sigmoid(action_logits)
+                dist = torch.distributions.Bernoulli(action_probs)
+                action_sample = dist.sample()
+                active_indices = (action_sample[0] == 1).nonzero(as_tuple=True)[0]
 
-            try:
-                for idx in active_indices:
-                    ctrl = CONTROLS_MAP[idx.item()]
-                    if ctrl['type'] == 'key':
-                        pyautogui.keyDown(ctrl['val'])
-                    elif ctrl['type'] == 'click':
-                        pyautogui.mouseDown(button=ctrl['btn'])
-                    elif ctrl['type'] == 'scroll':
-                        pyautogui.scroll(ctrl['val'])
-                    elif ctrl['type'] == 'move':
-                        pyautogui.moveRel(ctrl['x'], ctrl['y'], duration=0)
+                try:
+                    for idx in active_indices:
+                        ctrl = CONTROLS_MAP[idx.item()]
+                        if ctrl['type'] == 'key':
+                            pyautogui.keyDown(ctrl['val'])
+                        elif ctrl['type'] == 'click':
+                            pyautogui.mouseDown(button=ctrl['btn'])
+                        elif ctrl['type'] == 'scroll':
+                            pyautogui.scroll(ctrl['val'])
+                        elif ctrl['type'] == 'move':
+                            pyautogui.moveRel(ctrl['x'], ctrl['y'], duration=0)
 
+                    time.sleep(INPUT_DURATION)
+
+                    for idx in active_indices:
+                        ctrl = CONTROLS_MAP[idx.item()]
+                        if ctrl['type'] == 'key':
+                            pyautogui.keyUp(ctrl['val'])
+                        elif ctrl['type'] == 'click':
+                            pyautogui.mouseUp(button=ctrl['btn'])
+                except Exception as e:
+                    tqdm.write(f"Action execution error: {e}")
+            else:
                 time.sleep(INPUT_DURATION)
-
-                for idx in active_indices:
-                    ctrl = CONTROLS_MAP[idx.item()]
-                    if ctrl['type'] == 'key':
-                        pyautogui.keyUp(ctrl['val'])
-                    elif ctrl['type'] == 'click':
-                        pyautogui.mouseUp(button=ctrl['btn'])
-            except Exception as e:
-                tqdm.write(f"Action execution error: {e}")
 
             img_after = grab_frame(sct, rect)
             l2, r2 = audio.get_levels() if audio.running else (0.0, 0.0)
@@ -293,17 +355,30 @@ def main():
             true_after_t = torch.from_numpy(flat_after_numpy).to(DEVICE).unsqueeze(0)
 
             loss_vis = F.l1_loss(pred_next, true_after_t)
+            
+            loss = loss_vis 
 
-            probs = torch.clamp(action_probs, 1e-6, 1.0 - 1e-6)
-            entropy = -(probs * torch.log(probs) + (1 - probs) * torch.log(1 - probs)).mean()
-            loss = loss_vis - 1e-3 * entropy
+            loss_act_val = 0.0
+            if is_watch_mode and human_actions is not None:
+                loss_act = criterion_action(action_logits, human_actions.unsqueeze(0))
+                loss += loss_act
+                loss_act_val = loss_act.item()
+            else:
+                probs = torch.sigmoid(action_logits)
+                probs = torch.clamp(probs, 1e-6, 1.0 - 1e-6)
+                entropy = -(probs * torch.log(probs) + (1 - probs) * torch.log(1 - probs)).mean()
+                loss = loss - 1e-3 * entropy
 
             opt.zero_grad()
             loss.backward()
             opt.step()
 
             pbar.update(1)
-            pbar.set_postfix({'loss': f'{loss.item():.4f}', 'vis': f'{loss_vis.item():.4f}', 'ent': f'{entropy.item():.4f}'})
+            pbar.set_postfix({
+                'loss': f'{loss.item():.4f}', 
+                'vis': f'{loss_vis.item():.4f}', 
+                'act': f'{loss_act_val:.4f}'
+            })
             step += 1
 
             if time.time() % SAVE_INTERVAL < 1:
@@ -316,7 +391,8 @@ def main():
     finally:
         pbar.close()
         audio.stop()
-        wm.unlock_cursor()
+        if not is_watch_mode:
+            wm.unlock_cursor()
         CheckpointManager.save(model, opt, step)
         print("Clean exit complete.")
         sys.exit(0)
