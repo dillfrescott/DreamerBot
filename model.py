@@ -268,46 +268,50 @@ class CheckpointManager:
         ckpt = torch.load(latest, map_location=DEVICE)
         state_dict = ckpt['model']
 
-        saved_actions = state_dict['action_head.weight'].shape[0]
-        current_actions = model.action_head.weight.shape[0]
-
-        if saved_actions != current_actions:
-            print(f"!!! ACTION SPACE MISMATCH ({saved_actions} vs {current_actions}) !!!")
-            print("Adapting Model: Keeping Vision Brain, Resetting Action Muscles.")
-            
-            del state_dict['action_head.weight']
-            del state_dict['action_head.bias']
-            
-            model.load_state_dict(state_dict, strict=False)
-            print("Note: Optimizer reset due to architecture change.")
-            return ckpt.get('step', 0)
-        else:
+        try:
             model.load_state_dict(state_dict)
             opt.load_state_dict(ckpt['opt'])
             return ckpt.get('step', 0)
+        except RuntimeError:
+            print("!!! ARCHITECTURE MISMATCH (Likely Action Conditioning Update) !!!")
+            print("Resetting Input Embeddings. Keeping other weights if possible.")
+            
+            model_dict = model.state_dict()
+            pretrained_dict = {k: v for k, v in state_dict.items() if k in model_dict and v.shape == model_dict[k].shape}
+            model_dict.update(pretrained_dict)
+            model.load_state_dict(model_dict)
+            
+            return 0 
 
 class Transformer(nn.Module):
-    def __init__(self, image_dim, audio_dim=2, embed_dim=256, heads=4, depth=4, num_actions=NUM_CONTROLS):
+    def __init__(self, image_dim, audio_dim=2, embed_dim=256, heads=8, depth=4, num_actions=NUM_CONTROLS):
         super().__init__()
-        self.embed = nn.Linear(image_dim + audio_dim, embed_dim)
+        self.input_dim = image_dim + audio_dim + num_actions
+        self.embed = nn.Linear(self.input_dim, embed_dim)
 
         self.decoder = Decoder(
             dim=embed_dim,
             depth=depth,
             heads=heads,
-            rotary_pos_emb=True
+            ff_glu=True,
+            attn_qk_norm=True,
+            gate_residual=True,
+            rotary_pos_emb=True,
+            attn_qk_norm_dim_scale=True
         )
 
-        self.next_frame_head = nn.Linear(embed_dim, image_dim + audio_dim)
+        self.next_state_head = nn.Linear(embed_dim, image_dim + audio_dim)
         self.action_head = nn.Linear(embed_dim, num_actions)
 
     def forward(self, x):
         emb = self.embed(x)
         out = self.decoder(emb)
         last = out[:, -1, :]
-        next_pred = self.next_frame_head(last)
+        
+        next_state_pred = self.next_state_head(last)
         action_logits = self.action_head(last)
-        return next_pred, action_logits
+        
+        return next_state_pred, action_logits
 
     def dream(self, x, steps=5):
         predictions = []
@@ -317,10 +321,18 @@ class Transformer(nn.Module):
             emb = self.embed(current_seq)
             out = self.decoder(emb)
             last = out[:, -1, :]
-            next_step_pred = self.next_frame_head(last)
-            next_step_token = next_step_pred.unsqueeze(1)
-            current_seq = torch.cat((current_seq, next_step_token), dim=1)
-            predictions.append(next_step_pred)
+            
+            next_state_pred = self.next_state_head(last)
+            
+            action_logits = self.action_head(last)
+            action_probs = torch.sigmoid(action_logits)
+            dist = torch.distributions.Bernoulli(action_probs)
+            next_action_sample = dist.sample() 
+            
+            next_token = torch.cat([next_state_pred, next_action_sample], dim=1).unsqueeze(1)
+            
+            current_seq = torch.cat((current_seq, next_token), dim=1)
+            predictions.append(next_state_pred)
 
         return predictions
 
@@ -334,7 +346,7 @@ def image_to_flat(img):
     return (img.astype(np.float32).reshape(-1) / 255.0)
 
 def main():
-    print("\n=== SYSTEM CONTROL ===")
+    print("\n=== ACTION-CONDITIONED WORLD MODEL ===")
     print("[1] PLAY MODE (Autonomous Control)")
     print("[2] WATCH MODE (Imitation Learning)")
     mode_sel = input("Select mode (1/2): ").strip()
@@ -367,7 +379,7 @@ def main():
 
     image_dim = IMG_H * IMG_W * 3
     audio_dim = 2
-
+    
     model = Transformer(image_dim=image_dim, audio_dim=audio_dim).to(DEVICE)
     opt = Prodigy(model.parameters(), lr=0.04)
     criterion_action = nn.BCEWithLogitsLoss()
@@ -375,7 +387,8 @@ def main():
     step = CheckpointManager.load(model, opt)
 
     SEQ_LEN = 4096
-    ctx_buffer = torch.zeros((SEQ_LEN + 1, image_dim + audio_dim), device=DEVICE)
+    total_input_dim = image_dim + audio_dim + NUM_CONTROLS
+    ctx_buffer = torch.zeros((SEQ_LEN + 1, total_input_dim), device=DEVICE)
     ctx_count = 0
 
     pbar = tqdm(initial=step)
@@ -388,6 +401,8 @@ def main():
             recorder.save_to_json()
     keyboard.add_hotkey('f9', on_exit)
 
+    current_action_vec = torch.zeros(NUM_CONTROLS).to(DEVICE)
+
     try:
         while not stop_event.is_set():
             if not target_region:
@@ -396,15 +411,16 @@ def main():
             img = grab_frame(sct, target_region)
             l, r = audio.get_levels() if audio.running else (0.0, 0.0)
             
-            human_actions = None
             if is_watch_mode:
-                human_actions = human.get_active_vector()
-
-            flat_numpy = np.concatenate([image_to_flat(img), np.array([l, r], dtype=np.float32)])
-            flat_tensor = torch.from_numpy(flat_numpy).to(DEVICE)
+                current_action_vec = human.get_active_vector()
+            
+            flat_state_numpy = np.concatenate([image_to_flat(img), np.array([l, r], dtype=np.float32)])
+            flat_state_tensor = torch.from_numpy(flat_state_numpy).to(DEVICE)
+            
+            full_token = torch.cat([flat_state_tensor, current_action_vec])
 
             ctx_buffer = torch.roll(ctx_buffer, -1, 0)
-            ctx_buffer[-1] = flat_tensor
+            ctx_buffer[-1] = full_token
             
             if ctx_count < SEQ_LEN + 1:
                 ctx_count += 1
@@ -420,12 +436,15 @@ def main():
             with torch.no_grad():
                 _ = model.dream(inp, steps=DREAM_HORIZON)
 
-            pred_next, action_logits = model(inp)
+            pred_next_state, action_logits = model(inp)
 
             if not is_watch_mode:
                 action_probs = torch.sigmoid(action_logits)
                 dist = torch.distributions.Bernoulli(action_probs)
                 action_sample = dist.sample()
+                
+                current_action_vec = action_sample[0].float()
+
                 active_indices = (action_sample[0] == 1).nonzero(as_tuple=True)[0]
 
                 try:
@@ -457,15 +476,15 @@ def main():
             l2, r2 = audio.get_levels() if audio.running else (0.0, 0.0)
             
             flat_after_numpy = np.concatenate([image_to_flat(img_after), np.array([l2, r2], dtype=np.float32)])
-            true_after_t = torch.from_numpy(flat_after_numpy).to(DEVICE).unsqueeze(0)
+            true_after_state = torch.from_numpy(flat_after_numpy).to(DEVICE).unsqueeze(0)
 
-            loss_vis = F.l1_loss(pred_next, true_after_t)
+            loss_vis = F.l1_loss(pred_next_state, true_after_state)
             
             loss = loss_vis 
 
             loss_act_val = 0.0
-            if is_watch_mode and human_actions is not None:
-                loss_act = criterion_action(action_logits, human_actions.unsqueeze(0))
+            if is_watch_mode:
+                loss_act = criterion_action(action_logits, current_action_vec.unsqueeze(0))
                 loss += loss_act
                 loss_act_val = loss_act.item()
             else:
