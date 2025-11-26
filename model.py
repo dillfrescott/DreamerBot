@@ -35,6 +35,7 @@ pyautogui.PAUSE = 0.0
 
 INPUT_DURATION = 0.3
 DREAM_HORIZON = 16
+SEQ_LEN = 2048
 
 stop_event = Event()
 
@@ -401,7 +402,6 @@ def main():
 
     step = CheckpointManager.load(model, opt)
 
-    SEQ_LEN = 4096
     total_input_dim = image_dim + audio_dim + NUM_CONTROLS
     ctx_buffer = torch.zeros((SEQ_LEN + 1, total_input_dim), device=DEVICE)
     ctx_count = 0

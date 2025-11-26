@@ -17,7 +17,7 @@ DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 CKPT_DIR = 'ckpts_predictive_action'
 VIDEO_DIR = 'training_videos'
 CONTROLS_JSON = 'controls_allowlist.json'
-SEQ_LEN = 4096
+SEQ_LEN = 2048
 
 def get_default_controls():
     return {
