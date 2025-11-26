@@ -11,10 +11,9 @@ import glob
 import sys
 import warnings
 import keyboard
-import ctypes
+import mouse
 import soundcard as sc
 from tqdm import tqdm
-from ctypes import wintypes
 from datetime import datetime
 from threading import Event, Thread
 from x_transformers import Decoder
@@ -23,7 +22,6 @@ from prodigyopt import Prodigy
 warnings.filterwarnings("ignore")
 
 IMG_H, IMG_W = 128, 256
-PATCH_H, PATCH_W = 32, 32
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 CKPT_DIR = 'ckpts_predictive_action'
 SAVE_INTERVAL = 900
@@ -33,7 +31,6 @@ pyautogui.FAILSAFE = False
 pyautogui.PAUSE = 0.0
 
 INPUT_DURATION = 0.3
-MOUSE_DURATION = 0.04
 DREAM_HORIZON = 16
 
 KEY_LIST = ['w', 'a', 's', 'd', 'space', 'shift', 'ctrl', 'q', 'e']
@@ -59,37 +56,37 @@ stop_event = Event()
 
 if not os.path.exists(CKPT_DIR): os.makedirs(CKPT_DIR)
 
-class WindowMgr:
+class RegionSelector:
     def __init__(self):
-        self._rect = None
-        self._hwnd = None
+        self.top_left = None
+        self.bottom_right = None
 
-    def capture_active(self):
-        self._hwnd = ctypes.windll.user32.GetForegroundWindow()
-        rect = wintypes.RECT()
-        ctypes.windll.user32.GetWindowRect(self._hwnd, ctypes.byref(rect))
-        self._rect = (rect.left, rect.top, rect.right, rect.bottom)
-        length = ctypes.windll.user32.GetWindowTextLengthW(self._hwnd)
-        buff = ctypes.create_unicode_buffer(length + 1)
-        ctypes.windll.user32.GetWindowTextW(self._hwnd, buff, length + 1)
-        return buff.value
+    def calibrate(self):
+        print("\n--- CALIBRATION ---")
+        print("1. Hover mouse over the TOP-LEFT corner of your target window/game.")
+        print("   Press 'K' to set top-left.")
+        keyboard.wait('k')
+        self.top_left = pyautogui.position()
+        print(f"   Top-Left set: {self.top_left}")
+        time.sleep(0.5)
+
+        print("2. Hover mouse over the BOTTOM-RIGHT corner.")
+        print("   Press 'K' to set bottom-right.")
+        keyboard.wait('k')
+        self.bottom_right = pyautogui.position()
+        print(f"   Bottom-Right set: {self.bottom_right}")
+        time.sleep(5)
 
     def get_region(self):
-        return self._rect
-
-    def force_focus(self):
-        if self._hwnd:
-            current = ctypes.windll.user32.GetForegroundWindow()
-            if current != self._hwnd:
-                ctypes.windll.user32.SetForegroundWindow(self._hwnd)
-
-    def lock_cursor(self):
-        if not self._rect: return
-        rect = wintypes.RECT(*self._rect)
-        ctypes.windll.user32.ClipCursor(ctypes.byref(rect))
-
-    def unlock_cursor(self):
-        ctypes.windll.user32.ClipCursor(None)
+        if not self.top_left or not self.bottom_right:
+            return None
+        
+        left = int(min(self.top_left[0], self.bottom_right[0]))
+        top = int(min(self.top_left[1], self.bottom_right[1]))
+        width = int(abs(self.bottom_right[0] - self.top_left[0]))
+        height = int(abs(self.bottom_right[1] - self.top_left[1]))
+        
+        return {"top": top, "left": left, "width": width, "height": height}
 
 class AudioEar:
     def __init__(self):
@@ -113,7 +110,7 @@ class AudioEar:
                         vol = np.sqrt(np.mean(data**2))
                         self.left_vol = vol
                         self.right_vol = vol
-        except Exception:
+        except Exception: 
             self.running = False
 
     def get_levels(self):
@@ -136,10 +133,8 @@ class HumanListener:
         delta_y = curr_mouse_y - self.last_mouse_pos[1]
         self.last_mouse_pos = (curr_mouse_x, curr_mouse_y)
         
-        vk_lbutton = 0x01
-        vk_rbutton = 0x02
-        left_clicked = (ctypes.windll.user32.GetAsyncKeyState(vk_lbutton) & 0x8000) != 0
-        right_clicked = (ctypes.windll.user32.GetAsyncKeyState(vk_rbutton) & 0x8000) != 0
+        left_clicked = mouse.is_pressed(button='left')
+        right_clicked = mouse.is_pressed(button='right')
 
         for i, ctrl in enumerate(CONTROLS_MAP):
             is_active = False
@@ -156,10 +151,10 @@ class HumanListener:
             
             elif ctrl['type'] == 'move':
                 sensitivity_thresh = 5
-                if ctrl['y'] < 0 and delta_y < -sensitivity_thresh: is_active = True # Up
-                if ctrl['y'] > 0 and delta_y > sensitivity_thresh: is_active = True # Down
-                if ctrl['x'] < 0 and delta_x < -sensitivity_thresh: is_active = True # Left
-                if ctrl['x'] > 0 and delta_x > sensitivity_thresh: is_active = True # Right
+                if ctrl['y'] < 0 and delta_y < -sensitivity_thresh: is_active = True
+                if ctrl['y'] > 0 and delta_y > sensitivity_thresh: is_active = True
+                if ctrl['x'] < 0 and delta_x < -sensitivity_thresh: is_active = True
+                if ctrl['x'] > 0 and delta_x > sensitivity_thresh: is_active = True
             
             if is_active:
                 active_vec[i] = 1.0
@@ -225,9 +220,8 @@ class Transformer(nn.Module):
 
         return predictions
 
-def grab_frame(sct, rect):
-    mon = {"left": rect[0], "top": rect[1], "width": rect[2]-rect[0], "height": rect[3]-rect[1]}
-    raw = np.array(sct.grab(mon))
+def grab_frame(sct, monitor):
+    raw = np.array(sct.grab(monitor))
     img = cv2.resize(raw, (IMG_W, IMG_H), interpolation=cv2.INTER_AREA)
     img = cv2.cvtColor(img, cv2.COLOR_BGRA2RGB)
     return img
@@ -236,7 +230,7 @@ def image_to_flat(img):
     return (img.astype(np.float32).reshape(-1) / 255.0)
 
 def main():
-    wm = WindowMgr()
+    region_selector = RegionSelector()
     
     print("\n=== SYSTEM CONTROL ===")
     print("[1] PLAY MODE (Autonomous Control)")
@@ -247,15 +241,9 @@ def main():
     mode_str = "WATCH" if is_watch_mode else "PLAY"
     print(f"initializing {mode_str} mode...")
 
-    print("Open and focus your target window. Locking in 5s...")
-    time.sleep(5)
-    title = wm.capture_active()
-    print(f"LOCKED TARGET: '{title}'")
-    
-    if not is_watch_mode:
-        wm.lock_cursor()
-    
-    wm.force_focus()
+    region_selector.calibrate()
+    target_region = region_selector.get_region()
+    print(f"Tracking Region: {target_region}")
 
     sct = mss.mss()
     audio = AudioEar()
@@ -283,12 +271,10 @@ def main():
 
     try:
         while not stop_event.is_set():
-            rect = wm.get_region()
-            if not rect:
-                time.sleep(0.1)
-                continue
+            if not target_region:
+                break
 
-            img = grab_frame(sct, rect)
+            img = grab_frame(sct, target_region)
             l, r = audio.get_levels() if audio.running else (0.0, 0.0)
             
             human_actions = None
@@ -313,7 +299,7 @@ def main():
             model.train()
             
             with torch.no_grad():
-                imagined_trajectory = model.dream(inp, steps=DREAM_HORIZON)
+                _ = model.dream(inp, steps=DREAM_HORIZON)
 
             pred_next, action_logits = model(inp)
 
@@ -327,9 +313,9 @@ def main():
                     for idx in active_indices:
                         ctrl = CONTROLS_MAP[idx.item()]
                         if ctrl['type'] == 'key':
-                            pyautogui.keyDown(ctrl['val'])
+                            keyboard.press(ctrl['val'])
                         elif ctrl['type'] == 'click':
-                            pyautogui.mouseDown(button=ctrl['btn'])
+                            mouse.press(button=ctrl['btn'])
                         elif ctrl['type'] == 'scroll':
                             pyautogui.scroll(ctrl['val'])
                         elif ctrl['type'] == 'move':
@@ -340,15 +326,15 @@ def main():
                     for idx in active_indices:
                         ctrl = CONTROLS_MAP[idx.item()]
                         if ctrl['type'] == 'key':
-                            pyautogui.keyUp(ctrl['val'])
+                            keyboard.release(ctrl['val'])
                         elif ctrl['type'] == 'click':
-                            pyautogui.mouseUp(button=ctrl['btn'])
+                            mouse.release(button=ctrl['btn'])
                 except Exception as e:
                     tqdm.write(f"Action execution error: {e}")
             else:
                 time.sleep(INPUT_DURATION)
 
-            img_after = grab_frame(sct, rect)
+            img_after = grab_frame(sct, target_region)
             l2, r2 = audio.get_levels() if audio.running else (0.0, 0.0)
             
             flat_after_numpy = np.concatenate([image_to_flat(img_after), np.array([l2, r2], dtype=np.float32)])
@@ -391,8 +377,6 @@ def main():
     finally:
         pbar.close()
         audio.stop()
-        if not is_watch_mode:
-            wm.unlock_cursor()
         CheckpointManager.save(model, opt, step)
         print("Clean exit complete.")
         sys.exit(0)
