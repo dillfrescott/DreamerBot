@@ -110,7 +110,7 @@ def train_on_video(video_path, model, opt, step):
         inp = valid_window[:-1].unsqueeze(0)
         
         target_state_size = image_dim + audio_dim
-        true_next_state = valid_window[-1, :target_state_size].unsqueeze(0).unsqueeze(0)
+        true_next_state = valid_window[-1, :target_state_size].unsqueeze(0)
 
         model.train()
         pred_next_state = model(inp)
