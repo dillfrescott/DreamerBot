@@ -161,7 +161,7 @@ class RegionSelector:
         keyboard.wait('k')
         self.bottom_right = pyautogui.position()
         print(f"   Bottom-Right set: {self.bottom_right}")
-        time.sleep(1)
+        time.sleep(5)
 
     def get_region(self):
         if not self.top_left or not self.bottom_right:
