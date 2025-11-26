@@ -327,7 +327,7 @@ class Transformer(nn.Module):
             action_logits = self.action_head(last)
             action_probs = torch.sigmoid(action_logits)
             dist = torch.distributions.Bernoulli(action_probs)
-            next_action_sample = dist.sample() 
+            next_action_sample = dist.sample()
             
             next_token = torch.cat([next_state_pred, next_action_sample], dim=1).unsqueeze(1)
             
