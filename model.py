@@ -441,7 +441,7 @@ def main():
             if not is_watch_mode:
                 action_probs = torch.sigmoid(action_logits)
                 dist = torch.distributions.Bernoulli(action_probs)
-                action_sample = dist.sample()
+                action_sample = dist.sample() 
                 
                 current_action_vec = action_sample[0].float()
 
@@ -492,6 +492,12 @@ def main():
                 probs = torch.clamp(probs, 1e-6, 1.0 - 1e-6)
                 entropy = -(probs * torch.log(probs) + (1 - probs) * torch.log(1 - probs)).mean()
                 loss = loss - 1e-3 * entropy
+
+                current_state_img = inp[:, -1, :image_dim]
+                predicted_next_img = pred_next_state[:, :image_dim]
+                change_magnitude = torch.mean(torch.abs(current_state_img - predicted_next_img))
+                boredom_loss = 0.05 / (change_magnitude + 1e-6)
+                loss = loss + boredom_loss
 
             opt.zero_grad()
             loss.backward()
