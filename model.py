@@ -42,8 +42,8 @@ if not os.path.exists(CKPT_DIR): os.makedirs(CKPT_DIR)
 
 def get_default_controls():
     return {
-        'keys': ['w', 'a', 's', 'd', 'space', 'shift', 'ctrl', 'q', 'e'],
-        'mouse': ['left', 'right']
+        'keys': [],
+        'mouse': []
     }
 
 def load_controls_from_json():
@@ -353,12 +353,6 @@ def main():
     
     is_watch_mode = (mode_sel == '2')
     
-    recorder = None
-    if is_watch_mode:
-        print("Initializing Input Recorder...")
-        recorder = InputRecorder()
-        recorder.start()
-
     region_selector = RegionSelector()
     if region_selector.load():
         print(f"Loaded Saved Region: {region_selector.get_region()}")
@@ -372,6 +366,12 @@ def main():
     
     target_region = region_selector.get_region()
     print(f"Tracking Region: {target_region}")
+
+    recorder = None
+    if is_watch_mode:
+        print("Initializing Input Recorder...")
+        recorder = InputRecorder()
+        recorder.start()
 
     sct = mss.mss()
     audio = AudioEar()

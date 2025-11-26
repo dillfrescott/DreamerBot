@@ -21,8 +21,8 @@ SEQ_LEN = 4096
 
 def get_default_controls():
     return {
-        'keys': ['w', 'a', 's', 'd', 'space', 'shift', 'ctrl', 'q', 'e'],
-        'mouse': ['left', 'right']
+        'keys': [],
+        'mouse': []
     }
 
 def load_controls_from_json():
