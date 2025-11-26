@@ -161,6 +161,7 @@ class RegionSelector:
         keyboard.wait('k')
         self.bottom_right = pyautogui.position()
         print(f"   Bottom-Right set: {self.bottom_right}")
+        print("Beginning in 5 seconds...")
         time.sleep(5)
 
     def get_region(self):
@@ -378,6 +379,7 @@ def main():
     
     target_region = region_selector.get_region()
     print(f"Tracking Region: {target_region}")
+    print("Beginning in 5 seconds...")
     time.sleep(5)
 
     recorder = None
