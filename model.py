@@ -263,10 +263,28 @@ class CheckpointManager:
         files = glob.glob(os.path.join(CKPT_DIR, 'predictive_action_*.pth'))
         if not files: return 0
         latest = max(files, key=os.path.getmtime)
+        print(f"Loading checkpoint: {latest}")
+        
         ckpt = torch.load(latest, map_location=DEVICE)
-        model.load_state_dict(ckpt['model'])
-        opt.load_state_dict(ckpt['opt'])
-        return ckpt.get('step', 0)
+        state_dict = ckpt['model']
+
+        saved_actions = state_dict['action_head.weight'].shape[0]
+        current_actions = model.action_head.weight.shape[0]
+
+        if saved_actions != current_actions:
+            print(f"!!! ACTION SPACE MISMATCH ({saved_actions} vs {current_actions}) !!!")
+            print("Adapting Model: Keeping Vision Brain, Resetting Action Muscles.")
+            
+            del state_dict['action_head.weight']
+            del state_dict['action_head.bias']
+            
+            model.load_state_dict(state_dict, strict=False)
+            print("Note: Optimizer reset due to architecture change.")
+            return ckpt.get('step', 0)
+        else:
+            model.load_state_dict(state_dict)
+            opt.load_state_dict(ckpt['opt'])
+            return ckpt.get('step', 0)
 
 class Transformer(nn.Module):
     def __init__(self, image_dim, audio_dim=2, embed_dim=256, heads=4, depth=4, num_actions=NUM_CONTROLS):
