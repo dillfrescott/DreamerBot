@@ -26,6 +26,7 @@ IMG_H, IMG_W = 128, 256
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 CKPT_DIR = 'ckpts_predictive_action'
 CONTROLS_JSON = 'controls_allowlist.json'
+REGION_JSON = 'region.json'
 SAVE_INTERVAL = 900
 MAX_CKPTS = 3
 MOUSE_SPEED = 50
@@ -89,8 +90,19 @@ class InputRecorder:
         self.hook_mouse = mouse.hook(self._on_mouse_event)
 
     def stop(self):
-        if self.hook_keys: keyboard.unhook(self.hook_keys)
-        if self.hook_mouse: mouse.unhook(self.hook_mouse)
+        if self.hook_keys: 
+            try:
+                keyboard.unhook(self.hook_keys)
+            except KeyError:
+                pass
+            self.hook_keys = None
+            
+        if self.hook_mouse: 
+            try:
+                mouse.unhook(self.hook_mouse)
+            except KeyError:
+                pass
+            self.hook_mouse = None
 
     def _on_key_event(self, e):
         if e.event_type == keyboard.KEY_DOWN:
@@ -114,6 +126,27 @@ class RegionSelector:
         self.top_left = None
         self.bottom_right = None
 
+    def save(self):
+        if self.top_left and self.bottom_right:
+            data = {
+                'top_left': [self.top_left[0], self.top_left[1]],
+                'bottom_right': [self.bottom_right[0], self.bottom_right[1]]
+            }
+            with open(REGION_JSON, 'w') as f:
+                json.dump(data, f)
+
+    def load(self):
+        if os.path.exists(REGION_JSON):
+            try:
+                with open(REGION_JSON, 'r') as f:
+                    data = json.load(f)
+                    self.top_left = tuple(data['top_left'])
+                    self.bottom_right = tuple(data['bottom_right'])
+                    return True
+            except:
+                pass
+        return False
+
     def calibrate(self):
         print("\n--- CALIBRATION ---")
         print("1. Hover mouse over the TOP-LEFT corner of your target window/game.")
@@ -128,7 +161,7 @@ class RegionSelector:
         keyboard.wait('k')
         self.bottom_right = pyautogui.position()
         print(f"   Bottom-Right set: {self.bottom_right}")
-        time.sleep(5)
+        time.sleep(1)
 
     def get_region(self):
         if not self.top_left or not self.bottom_right:
@@ -283,8 +316,6 @@ def image_to_flat(img):
     return (img.astype(np.float32).reshape(-1) / 255.0)
 
 def main():
-    region_selector = RegionSelector()
-    
     print("\n=== SYSTEM CONTROL ===")
     print("[1] PLAY MODE (Autonomous Control)")
     print("[2] WATCH MODE (Imitation Learning)")
@@ -298,10 +329,17 @@ def main():
         recorder = InputRecorder()
         recorder.start()
 
-    mode_str = "WATCH" if is_watch_mode else "PLAY"
-    print(f"initializing {mode_str} mode...")
-
-    region_selector.calibrate()
+    region_selector = RegionSelector()
+    if region_selector.load():
+        print(f"Loaded Saved Region: {region_selector.get_region()}")
+        use_saved = input("Use saved region? (y/n): ").lower()
+        if use_saved != 'y':
+            region_selector.calibrate()
+            region_selector.save()
+    else:
+        region_selector.calibrate()
+        region_selector.save()
+    
     target_region = region_selector.get_region()
     print(f"Tracking Region: {target_region}")
 
