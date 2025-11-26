@@ -308,9 +308,9 @@ class Transformer(nn.Module):
             depth=depth,
             heads=heads,
             ff_glu=True,
+            rotary_xpos=True,
             attn_qk_norm=True,
             gate_residual=True,
-            rotary_pos_emb=True,
             attn_qk_norm_dim_scale=True
         )
 
