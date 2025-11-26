@@ -1,0 +1,11 @@
+keyboard
+mouse
+mss
+numpy
+opencv-python
+prodigyopt
+PyAutoGUI
+SoundCard
+torch
+tqdm
+x-transformers
