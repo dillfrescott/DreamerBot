@@ -217,8 +217,9 @@ class HumanListener:
         curr_mouse_x, curr_mouse_y = pyautogui.position()
         delta_x = curr_mouse_x - self.last_mouse_pos[0]
         delta_y = curr_mouse_y - self.last_mouse_pos[1]
-        self.last_mouse_pos = (curr_mouse_x, curr_mouse_y)
         
+        movement_registered = False
+
         left_clicked = mouse.is_pressed(button='left')
         right_clicked = mouse.is_pressed(button='right')
 
@@ -237,13 +238,24 @@ class HumanListener:
             
             elif ctrl['type'] == 'move':
                 sensitivity_thresh = 5
-                if ctrl['y'] < 0 and delta_y < -sensitivity_thresh: is_active = True
-                if ctrl['y'] > 0 and delta_y > sensitivity_thresh: is_active = True
-                if ctrl['x'] < 0 and delta_x < -sensitivity_thresh: is_active = True
-                if ctrl['x'] > 0 and delta_x > sensitivity_thresh: is_active = True
+                if ctrl['y'] < 0 and delta_y < -sensitivity_thresh: 
+                    is_active = True
+                    movement_registered = True
+                if ctrl['y'] > 0 and delta_y > sensitivity_thresh: 
+                    is_active = True
+                    movement_registered = True
+                if ctrl['x'] < 0 and delta_x < -sensitivity_thresh: 
+                    is_active = True
+                    movement_registered = True
+                if ctrl['x'] > 0 and delta_x > sensitivity_thresh: 
+                    is_active = True
+                    movement_registered = True
             
             if is_active:
                 active_vec[i] = 1.0
+        
+        if movement_registered:
+            self.last_mouse_pos = (curr_mouse_x, curr_mouse_y)
                 
         return active_vec
 
