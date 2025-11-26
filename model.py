@@ -372,6 +372,7 @@ def main():
         if use_saved != 'y':
             region_selector.calibrate()
             region_selector.save()
+            time.sleep(5)
     else:
         region_selector.calibrate()
         region_selector.save()
