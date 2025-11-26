@@ -13,6 +13,7 @@ import warnings
 import keyboard
 import mouse
 import soundcard as sc
+import json
 from tqdm import tqdm
 from datetime import datetime
 from threading import Event, Thread
@@ -24,6 +25,7 @@ warnings.filterwarnings("ignore")
 IMG_H, IMG_W = 128, 256
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 CKPT_DIR = 'ckpts_predictive_action'
+CONTROLS_JSON = 'controls_allowlist.json'
 SAVE_INTERVAL = 900
 MAX_CKPTS = 3
 MOUSE_SPEED = 50
@@ -33,28 +35,79 @@ pyautogui.PAUSE = 0.0
 INPUT_DURATION = 0.3
 DREAM_HORIZON = 16
 
-KEY_LIST = ['w', 'a', 's', 'd', 'space', 'shift', 'ctrl', 'q', 'e']
-
-CONTROLS_MAP = []
-for k in KEY_LIST:
-    CONTROLS_MAP.append({'type': 'key', 'val': k})
-
-CONTROLS_MAP.extend([
-    {'type': 'click', 'btn': 'left'},
-    {'type': 'click', 'btn': 'right'},
-    {'type': 'scroll', 'val': 60},
-    {'type': 'scroll', 'val': -60},
-    {'type': 'move', 'x': 0, 'y': -MOUSE_SPEED},
-    {'type': 'move', 'x': 0, 'y': MOUSE_SPEED},
-    {'type': 'move', 'x': -MOUSE_SPEED, 'y': 0},
-    {'type': 'move', 'x': MOUSE_SPEED, 'y': 0},
-])
-
-NUM_CONTROLS = len(CONTROLS_MAP)
-
 stop_event = Event()
 
 if not os.path.exists(CKPT_DIR): os.makedirs(CKPT_DIR)
+
+def get_default_controls():
+    return {
+        'keys': ['w', 'a', 's', 'd', 'space', 'shift', 'ctrl', 'q', 'e'],
+        'mouse': ['left', 'right']
+    }
+
+def load_controls_from_json():
+    if os.path.exists(CONTROLS_JSON):
+        try:
+            with open(CONTROLS_JSON, 'r') as f:
+                data = json.load(f)
+                return data
+        except Exception:
+            pass
+    return get_default_controls()
+
+def build_controls_map(control_data):
+    c_map = []
+    for k in control_data.get('keys', []):
+        c_map.append({'type': 'key', 'val': k})
+    
+    for btn in control_data.get('mouse', []):
+        c_map.append({'type': 'click', 'btn': btn})
+
+    c_map.extend([
+        {'type': 'scroll', 'val': 60},
+        {'type': 'scroll', 'val': -60},
+        {'type': 'move', 'x': 0, 'y': -MOUSE_SPEED},
+        {'type': 'move', 'x': 0, 'y': MOUSE_SPEED},
+        {'type': 'move', 'x': -MOUSE_SPEED, 'y': 0},
+        {'type': 'move', 'x': MOUSE_SPEED, 'y': 0},
+    ])
+    return c_map
+
+ACTIVE_CONTROL_DATA = load_controls_from_json()
+CONTROLS_MAP = build_controls_map(ACTIVE_CONTROL_DATA)
+NUM_CONTROLS = len(CONTROLS_MAP)
+
+class InputRecorder:
+    def __init__(self):
+        self.detected_keys = set(ACTIVE_CONTROL_DATA['keys'])
+        self.detected_mouse = set(ACTIVE_CONTROL_DATA['mouse'])
+        self.hook_keys = None
+        self.hook_mouse = None
+
+    def start(self):
+        self.hook_keys = keyboard.hook(self._on_key_event)
+        self.hook_mouse = mouse.hook(self._on_mouse_event)
+
+    def stop(self):
+        if self.hook_keys: keyboard.unhook(self.hook_keys)
+        if self.hook_mouse: mouse.unhook(self.hook_mouse)
+
+    def _on_key_event(self, e):
+        if e.event_type == keyboard.KEY_DOWN:
+            if e.name not in ['f9', 'esc']: 
+                self.detected_keys.add(e.name)
+
+    def _on_mouse_event(self, e):
+        if isinstance(e, mouse.ButtonEvent) and e.event_type == mouse.DOWN:
+            self.detected_mouse.add(str(e.button))
+
+    def save_to_json(self):
+        data = {
+            'keys': list(self.detected_keys),
+            'mouse': list(self.detected_mouse)
+        }
+        with open(CONTROLS_JSON, 'w') as f:
+            json.dump(data, f, indent=4)
 
 class RegionSelector:
     def __init__(self):
@@ -238,6 +291,13 @@ def main():
     mode_sel = input("Select mode (1/2): ").strip()
     
     is_watch_mode = (mode_sel == '2')
+    
+    recorder = None
+    if is_watch_mode:
+        print("Initializing Input Recorder...")
+        recorder = InputRecorder()
+        recorder.start()
+
     mode_str = "WATCH" if is_watch_mode else "PLAY"
     print(f"initializing {mode_str} mode...")
 
@@ -267,6 +327,9 @@ def main():
     def on_exit():
         tqdm.write('\n!!! STOP REQUEST RECEIVED (F9) - SAVING AND EXITING !!!')
         stop_event.set()
+        if recorder:
+            recorder.stop()
+            recorder.save_to_json()
     keyboard.add_hotkey('f9', on_exit)
 
     try:
@@ -377,8 +440,10 @@ def main():
     finally:
         pbar.close()
         audio.stop()
+        if recorder:
+            recorder.stop()
+            recorder.save_to_json()
         CheckpointManager.save(model, opt, step)
-        print("Clean exit complete.")
         sys.exit(0)
 
 if __name__ == '__main__':
