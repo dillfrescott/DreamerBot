@@ -97,7 +97,6 @@ Press **F9** to save the checkpoint and exit safely.
 
 ## Notes
 
-* **Admin Privileges:** Run as *Administrator* (Windows) or with *sudo* (Linux) to hook global input events.
 * **Failsafe:** `pyautogui` failsafe is disabled. Use **F9** to exit.
 
 ---
