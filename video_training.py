@@ -1,67 +1,16 @@
 import cv2
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import os
 import glob
-import json
-import sys
 from tqdm import tqdm
 from datetime import datetime
-from x_transformers import Decoder
 from prodigyopt import Prodigy
+from model import Transformer, IMG_H, IMG_W, DEVICE, CKPT_DIR, NUM_CONTROLS
 
-IMG_H, IMG_W = 128, 256
-DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-CKPT_DIR = 'ckpts_predictive_action'
 VIDEO_DIR = 'training_videos'
-CONTROLS_JSON = 'controls_allowlist.json'
 SEQ_LEN = 2048
-
-def get_default_controls():
-    return {
-        'keys': [],
-        'mouse': []
-    }
-
-def load_controls_from_json():
-    if os.path.exists(CONTROLS_JSON):
-        try:
-            with open(CONTROLS_JSON, 'r') as f:
-                data = json.load(f)
-                return data
-        except Exception:
-            pass
-    return get_default_controls()
-
-def get_num_controls():
-    data = load_controls_from_json()
-    return len(data.get('keys', [])) + len(data.get('mouse', [])) + 6
-
-NUM_CONTROLS = get_num_controls()
-
-class Transformer(nn.Module):
-    def __init__(self, image_dim, audio_dim=2, embed_dim=256, heads=8, depth=4, num_actions=NUM_CONTROLS):
-        super().__init__()
-        self.input_dim = image_dim + audio_dim + num_actions
-        self.embed = nn.Linear(self.input_dim, embed_dim)
-
-        self.decoder = Decoder(
-            dim=embed_dim,
-            depth=depth,
-            heads=heads,
-            rotary_pos_emb=True
-        )
-        
-        self.next_state_head = nn.Linear(embed_dim, image_dim + audio_dim)
-        self.action_head = nn.Linear(embed_dim, num_actions)
-
-    def forward(self, x):
-        emb = self.embed(x)
-        out = self.decoder(emb)
-        last = out[:, -1, :]
-        return self.next_state_head(last)
 
 def train_on_video(video_path, model, opt, step):
     cap = cv2.VideoCapture(video_path)
