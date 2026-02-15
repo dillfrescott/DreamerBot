@@ -8,3 +8,4 @@ PyAutoGUI
 SoundCard
 torch
 tqdm
+x-transformers
